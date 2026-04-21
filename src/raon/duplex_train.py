@@ -218,10 +218,6 @@ def main() -> None:
             task_type=None,
         )
         model.text_model = get_peft_model(model.text_model, lora_cfg)
-        if args.gradient_checkpointing:
-            # gradient_checkpointing freezes the input tensor's requires_grad,
-            # which blocks LoRA gradients. PeftModel exposes the standard fix.
-            model.text_model.enable_input_require_grads()
         n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         n_total = sum(p.numel() for p in model.parameters())
         logger.info(
@@ -229,6 +225,20 @@ def main() -> None:
             args.lora_rank, args.lora_alpha,
             n_trainable / 1e6, n_total / 1e6, 100.0 * n_trainable / max(n_total, 1),
         )
+
+    if args.gradient_checkpointing:
+        # RaonDuplexModel doesn't set supports_gradient_checkpointing=True, so
+        # HF Trainer's auto-enable on the outer model raises. Apply it here on
+        # the inner Qwen3 text_model directly (through the peft wrapper if
+        # LoRA is on) and pass gradient_checkpointing=False to TrainingArguments.
+        model.text_model.gradient_checkpointing_enable(
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+        )
+        if args.use_lora:
+            # gradient checkpointing drops the input tensor's requires_grad,
+            # which otherwise blocks LoRA adapters from receiving gradients.
+            model.text_model.enable_input_require_grads()
+        logger.info("Enabled gradient checkpointing on text_model (use_reentrant=False).")
 
     # Loss weights (from args)
     model.text_loss_weight = args.text_loss_weight
@@ -570,8 +580,9 @@ def main() -> None:
         save_steps=args.save_steps,
         report_to=[s.strip() for s in args.report_to.split(",") if s.strip()] or "none",
         ddp_find_unused_parameters=True,
-        gradient_checkpointing=args.gradient_checkpointing,
-        gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
+        # gradient_checkpointing handled manually on model.text_model above —
+        # RaonDuplexModel (outer) doesn't declare support, so letting HF
+        # Trainer auto-enable it would raise ValueError.
     )
 
     collator = packed_filtered_collate_fn if args.use_packing else filtered_collate_fn
