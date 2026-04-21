@@ -140,6 +140,17 @@ def parse_args() -> argparse.Namespace:
         default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
         help="Comma-separated target modules for LoRA (default covers Qwen-family attn+MLP).",
     )
+    # Experiment tracking (wandb / tensorboard). HF Trainer native; 'none' disables.
+    parser.add_argument(
+        "--report_to",
+        type=str,
+        default="none",
+        help="Comma-separated HF Trainer integrations: none | all | wandb | tensorboard | ...",
+    )
+    parser.add_argument("--wandb_project", type=str, default=None,
+                        help="Sets WANDB_PROJECT env var if provided.")
+    parser.add_argument("--wandb_run_name", type=str, default=None,
+                        help="Sets WANDB_NAME env var if provided.")
     return parser.parse_args()
 
 
@@ -156,6 +167,11 @@ def main() -> None:
     if args.batch_size != 1:
         logger.warning("duplex_train enforces batch_size=1. Overriding --batch_size=%s to 1.", args.batch_size)
     args.batch_size = 1
+
+    if args.wandb_project:
+        os.environ.setdefault("WANDB_PROJECT", args.wandb_project)
+    if args.wandb_run_name:
+        os.environ.setdefault("WANDB_NAME", args.wandb_run_name)
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -192,7 +208,7 @@ def main() -> None:
             lora_dropout=args.lora_dropout,
             target_modules=[m.strip() for m in args.lora_target_modules.split(",") if m.strip()],
             bias="none",
-            task_type="CAUSAL_LM",
+            task_type=None,
         )
         model.text_model = get_peft_model(model.text_model, lora_cfg)
         n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -541,7 +557,7 @@ def main() -> None:
         dataloader_pin_memory=False,
         save_strategy="steps",
         save_steps=args.save_steps,
-        report_to="none",
+        report_to=[s.strip() for s in args.report_to.split(",") if s.strip()] or "none",
         ddp_find_unused_parameters=True,
     )
 

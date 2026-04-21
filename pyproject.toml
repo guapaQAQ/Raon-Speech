@@ -32,6 +32,7 @@ dependencies = [
     "ipykernel>=7.0.1",
     "datasets>=3.0.0",
     "peft>=0.13.0",
+    "wandb>=0.17.0",
 ]
 
 [project.optional-dependencies]
