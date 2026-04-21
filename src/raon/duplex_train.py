@@ -151,6 +151,13 @@ def parse_args() -> argparse.Namespace:
                         help="Sets WANDB_PROJECT env var if provided.")
     parser.add_argument("--wandb_run_name", type=str, default=None,
                         help="Sets WANDB_NAME env var if provided.")
+    parser.add_argument(
+        "--gradient_checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Activation checkpointing — cuts activation memory ~half at a "
+             "~20%% step-time cost. Enable on LoRA runs if you see CUDA OOM.",
+    )
     return parser.parse_args()
 
 
@@ -211,6 +218,10 @@ def main() -> None:
             task_type=None,
         )
         model.text_model = get_peft_model(model.text_model, lora_cfg)
+        if args.gradient_checkpointing:
+            # gradient_checkpointing freezes the input tensor's requires_grad,
+            # which blocks LoRA gradients. PeftModel exposes the standard fix.
+            model.text_model.enable_input_require_grads()
         n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         n_total = sum(p.numel() for p in model.parameters())
         logger.info(
@@ -559,6 +570,8 @@ def main() -> None:
         save_steps=args.save_steps,
         report_to=[s.strip() for s in args.report_to.split(",") if s.strip()] or "none",
         ddp_find_unused_parameters=True,
+        gradient_checkpointing=args.gradient_checkpointing,
+        gradient_checkpointing_kwargs={"use_reentrant": False} if args.gradient_checkpointing else None,
     )
 
     collator = packed_filtered_collate_fn if args.use_packing else filtered_collate_fn
