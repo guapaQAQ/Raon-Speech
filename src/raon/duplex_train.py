@@ -124,6 +124,22 @@ def parse_args() -> argparse.Namespace:
         default=0.1,
         help="Loss weight applied to all acoustic codebooks (default: 0.1).",
     )
+    # LoRA (optional; text_model backbone only)
+    parser.add_argument(
+        "--use_lora",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If set, wrap model.text_model with peft.LoraConfig so only LoRA adapters are trainable.",
+    )
+    parser.add_argument("--lora_rank", type=int, default=128)
+    parser.add_argument("--lora_alpha", type=int, default=256)
+    parser.add_argument("--lora_dropout", type=float, default=0.05)
+    parser.add_argument(
+        "--lora_target_modules",
+        type=str,
+        default="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj",
+        help="Comma-separated target modules for LoRA (default covers Qwen-family attn+MLP).",
+    )
     return parser.parse_args()
 
 
@@ -164,6 +180,28 @@ def main() -> None:
             for param in module.parameters():
                 param.requires_grad = False
             logger.info("Froze %s", module_name)
+
+    if args.use_lora:
+        from peft import LoraConfig, get_peft_model
+
+        for p in model.text_model.parameters():
+            p.requires_grad = False
+        lora_cfg = LoraConfig(
+            r=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=[m.strip() for m in args.lora_target_modules.split(",") if m.strip()],
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model.text_model = get_peft_model(model.text_model, lora_cfg)
+        n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        n_total = sum(p.numel() for p in model.parameters())
+        logger.info(
+            "LoRA on text_model: rank=%d alpha=%d trainable=%.2fM / total=%.2fM (%.3f%%)",
+            args.lora_rank, args.lora_alpha,
+            n_trainable / 1e6, n_total / 1e6, 100.0 * n_trainable / max(n_total, 1),
+        )
 
     # Loss weights (from args)
     model.text_loss_weight = args.text_loss_weight
