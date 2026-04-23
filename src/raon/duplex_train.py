@@ -587,12 +587,33 @@ def main() -> None:
 
     collator = packed_filtered_collate_fn if args.use_packing else filtered_collate_fn
 
+    callbacks = [StepLoggingCallback(), SaveTokenizerCallback(processor)]
+
+    if args.use_lora:
+        # HF Trainer saves model.state_dict() of the outer RaonDuplexModel at
+        # every checkpoint. Because our peft wrapper lives on model.text_model
+        # (not the top-level), Trainer does NOT emit adapter_config.json or
+        # adapter_model.safetensors — so PeftModel.from_pretrained can't load
+        # the checkpoint back. This callback writes a proper peft adapter dir
+        # at checkpoint-<step>/lora_adapter/ after each save.
+        class SaveLoraAdapterCallback(TrainerCallback):
+            def __init__(self, peft_submodule):
+                self.peft = peft_submodule
+
+            def on_save(self, args, state, control, **kwargs):
+                ckpt = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+                target = os.path.join(ckpt, "lora_adapter")
+                self.peft.save_pretrained(target)
+                logger.info("Saved LoRA adapter to %s", target)
+
+        callbacks.append(SaveLoraAdapterCallback(model.text_model))
+
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=data_module["train_dataset"],
         data_collator=collator,
-        callbacks=[StepLoggingCallback(), SaveTokenizerCallback(processor)],
+        callbacks=callbacks,
     )
 
     logger.info("Starting duplex fine-tuning ...")
