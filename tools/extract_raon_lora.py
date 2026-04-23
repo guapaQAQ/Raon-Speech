@@ -66,6 +66,11 @@ def extract(
                 # via base model weights already when you re-apply).
                 if "lora_A" not in inner and "lora_B" not in inner:
                     continue
+                # Mirror peft.get_peft_model_state_dict: strip ".default" so
+                # that PeftModel.from_pretrained's rename step maps
+                # `lora_A.weight` -> `lora_A.default.weight` cleanly instead
+                # of double-inserting to `.default.default.weight`.
+                inner = inner.replace(".default", "")
                 extracted[inner] = f.get_tensor(key)
 
     if not extracted:
