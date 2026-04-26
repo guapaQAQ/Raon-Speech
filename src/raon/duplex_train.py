@@ -595,7 +595,11 @@ def main() -> None:
         # (not the top-level), Trainer does NOT emit adapter_config.json or
         # adapter_model.safetensors — so PeftModel.from_pretrained can't load
         # the checkpoint back. This callback writes a proper peft adapter dir
-        # at checkpoint-<step>/lora_adapter/ after each save.
+        # at checkpoint-<step>/lora_adapter/ after each save, then deletes the
+        # full sharded RaonDuplexModel dump (~18 GB/checkpoint of unchanged
+        # base weights) since only lora_adapter/ is needed for inference.
+        # optimizer.pt / scheduler.pt / rng_state.pth are kept so that
+        # --resume_from_checkpoint still works for interrupted runs.
         class SaveLoraAdapterCallback(TrainerCallback):
             def __init__(self, peft_submodule):
                 self.peft = peft_submodule
@@ -605,6 +609,28 @@ def main() -> None:
                 target = os.path.join(ckpt, "lora_adapter")
                 self.peft.save_pretrained(target)
                 logger.info("Saved LoRA adapter to %s", target)
+
+                removed = 0
+                bloat_patterns = (
+                    "model-",            # model-0000X-of-0000Y.safetensors shards
+                    "model.safetensors", # single-file unsharded variant
+                    "pytorch_model",     # legacy .bin shards / index
+                )
+                bloat_exact = {
+                    "model.safetensors.index.json",
+                }
+                for fname in os.listdir(ckpt):
+                    fpath = os.path.join(ckpt, fname)
+                    if not os.path.isfile(fpath):
+                        continue
+                    if fname in bloat_exact or fname.startswith(bloat_patterns):
+                        try:
+                            os.remove(fpath)
+                            removed += 1
+                        except OSError as e:
+                            logger.warning("Could not remove %s: %s", fpath, e)
+                if removed:
+                    logger.info("Pruned %d full-model files from %s", removed, ckpt)
 
         callbacks.append(SaveLoraAdapterCallback(model.text_model))
 
